@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  rest-api-private
+
+Transform:
+- AWS::Serverless-2016-10-31
+
+Resources:
+
+# Create a VPC
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+
+# Create two subnets
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: "eu-west-2a"
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: "eu-west-2b"
+
+# Create a Network Load Balancer
+  MyNetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      Type: network
+      Scheme: internal
+      Subnets: 
+        - !Ref Subnet1 
+        - !Ref Subnet2
+      Name: MyNetworkLoadBalancer
+
+  # Create a target group for the Network Load Balancer
+  MyTargetGroup: 
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80 
+      Protocol: TCP
+      TargetType: ip
+      Targets:
+        - Id: 10.0.1.10
+        - Id: 10.0.2.10
+      VpcId: !Ref MyVPC
+
+  # Create a listener for the Network Load Balancer
+  MyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      Port: 80
+      Protocol: TCP 
+      LoadBalancerArn: !Ref MyNetworkLoadBalancer 
+      DefaultActions: 
+        - Type: forward
+          TargetGroupArn: !Ref MyTargetGroup
+
+  # REST API
+  AppApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: apigw-rest-api-vpclink
+      Description: VPC Link integraton REST API demo
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+        
+
+  RootMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !GetAtt AppApi.RootResourceId
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: HTTP_PROXY
+        ConnectionType: VPC_LINK
+        IntegrationHttpMethod: GET
+        ConnectionId: !Ref VPCLinkRestNlbInternal
+        Uri: !Sub http://${MyNetworkLoadBalancer.DNSName}
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - RootMethodGet
+    Properties:
+      RestApiId: !Ref AppApi
+  
+  Stage:  
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: Prod
+      RestApiId: !Ref AppApi
+      DeploymentId: !Ref Deployment
+
+  VPCLinkRestNlbInternal:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Name: VPCLinkRestNlbInternal
+      TargetArns: 
+       - !GetAtt MyNetworkLoadBalancer.LoadBalancerArn
+
+Outputs:
+  WebEndpoint:
+    Description: "API Gateway endpoint URL for Prod stage"
+    Value: !Sub "https://${AppApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
